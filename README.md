@@ -35,6 +35,7 @@ Clone the repository:
 
 ```bash
 git clone https://github.com/jhlassen17/ChunkedCopy.git
+```
 
 ## 👨‍💻 Author
 
