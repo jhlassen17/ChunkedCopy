@@ -41,6 +41,7 @@ class Program
         bool verify = false;
         bool isDirectory = false;
         string? filter = null;
+        bool initFileFlag = false;
 
         // Set up console
         Console.Title = "Chunked Copy (Global Scheduler)";
@@ -78,6 +79,9 @@ class Program
                     break;
                 case "--filter":
                     filter = args[++i];
+                    break;
+                case "--init-files":
+                    initFileFlag = true;
                     break;
             }
         }
@@ -139,24 +143,26 @@ class Program
         // Check directory flag and copy accordingly
         if (isDirectory)
         {
+            // Check for filter
             if (!String.IsNullOrWhiteSpace(filter))
             {
-                await CopyDirectoryGlobal(source, dest, chunkSize, parallel, resume, verify, filter);
+                await CopyDirectoryGlobal(source, dest, chunkSize, parallel, resume, verify, initFileFlag, filter);
             }
             else
             {
-                await CopyDirectoryGlobal(source, dest, chunkSize, parallel, resume, verify);
+                await CopyDirectoryGlobal(source, dest, chunkSize, parallel, resume, verify, initFileFlag);
             }
         }
         else
         {
+            // Check for filter
             if (!String.IsNullOrWhiteSpace(filter))
             {
-                await CopyFileGlobal(source, dest, chunkSize, parallel, resume, verify, filter);
+                await CopyFileGlobal(source, dest, chunkSize, parallel, resume, verify, initFileFlag, filter);
             }
             else
             {
-                await CopyFileGlobal(source,dest,chunkSize,parallel, resume, verify);
+                await CopyFileGlobal(source, dest, chunkSize, parallel, resume, verify, initFileFlag);
             }
 
             // Check to see if we should verify the copy by comparing hashes of the source and destination files
@@ -173,15 +179,27 @@ class Program
         Console.WriteLine("\nDone.");
     }
 
-    // =========================
-    // GLOBAL DIRECTORY COPY
-    // =========================
-    static async Task CopyDirectoryGlobal(string sourceDir, string destDir, int chunkSize, int parallel, bool resume, bool verify, string filter = "*")
+    /// <summary>
+    /// Asynchronously copies a directory recursively using chunked parallel copying with optional resume and
+    /// verification support.
+    /// </summary>
+    /// <remarks>Files smaller than or equal to the chunk size are copied directly without chunking. State
+    /// files are created to track progress and enable resumption.</remarks>
+    /// <param name="sourceDir">Source directory path.</param>
+    /// <param name="destDir">Destination directory path.</param>
+    /// <param name="chunkSize">Size in bytes of each chunk for parallel copying.</param>
+    /// <param name="parallel">Number of parallel worker tasks to use.</param>
+    /// <param name="resume">Whether to resume from a previous interrupted copy using state files.</param>
+    /// <param name="verify">Whether to verify copied files by comparing hash values after completion.</param>
+    /// <param name="initFileFlag">Indicates whether to initialize the destination file.</param>
+    /// <param name="filter">File search pattern to filter which files to copy.</param>
+    /// <returns>A task that represents the asynchronous copy operation.</returns>
+    static async Task CopyDirectoryGlobal(string sourceDir, string destDir, int chunkSize, int parallel, 
+        bool resume, bool verify, bool initFileFlag, string filter = "*")
     {
-        string[] files;
-
+        // Init
         Console.WriteLine($"Skipping non-\"{filter}\" file");
-        files = Directory.GetFiles(sourceDir, filter, SearchOption.AllDirectories);
+        string[] files = Directory.GetFiles(sourceDir, filter, SearchOption.AllDirectories);
 
 
         // Calculate total bytes for progress reporting
@@ -190,7 +208,6 @@ class Program
             totalBytes += new FileInfo(f).Length;
 
         // Set up counters
-        //long processed = 0;
         long totalWritten = 0;
         int index = 0;
 
@@ -203,16 +220,14 @@ class Program
         // Set up queues and dictionaries
         var stateWriters = new ConcurrentDictionary<string, StateWriter>();
         var completedMaps = new ConcurrentDictionary<string, ConcurrentDictionary<int, bool>>();
-        //var dstHandles = new ConcurrentDictionary<string, Lazy<SafeFileHandle>>();
-        //var srcHandles = new ConcurrentDictionary<string, Lazy<SafeFileHandle>>();
-        //var initializedFiles = new ConcurrentDictionary<string, boWl>();
-        // ✅ NEW: file metadata (fixes resume + avoids dst dependency)
+        // File metadata (fixes resume + avoids dst dependency)
         var fileMeta = new ConcurrentDictionary<string, (string src, int chunkCount, ConcurrentDictionary<int, bool> completed)>();
         var maxWrittenOffsets = new ConcurrentDictionary<string, long>();
 
-        // ✅ Build global chunk queue
+        // Build global chunk queue
         foreach (var src in files)
         {
+            // Init
             var chunkQueue = new ConcurrentQueue<(string src, string dst, long offset, int size, int index)>();
             var fileWriteLocks = new ConcurrentDictionary<string, SemaphoreSlim>();
 
@@ -231,49 +246,52 @@ class Program
 
             //  Calculate sizes, chunks, and state
             long fileSize = new FileInfo(src).Length;
-            //InitializeDestinationFile(dst, fileSize);
+            // Check to see if we want to init the files ahead of time
+            if(initFileFlag) InitializeDestinationFile(dst, fileSize);
+
+            // Compare the normalized file titles
             if (NormalizeTitle(src) == NormalizeTitle(dst))
             {
+                // If the file exists and is the correct length, skip it
                 if (File.Exists(dst) && (new FileInfo(dst).Length == fileSize))
                 {
                     continue;
                 }
             }
 
-            // 
+            // If the file doesn't exist, create it
             if (!File.Exists(dst))
             {
                 using var fs = new FileStream(dst, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite);
             }
 
-            //// ***** Filter *****
-            //if(!src.Contains("[3D HSBS]"))
-            //{
-            //    Console.WriteLine("Skipping non-3D file");
-            //    continue;
-            //}
-
-            // ✅ SMALL FILE FAST PATH (skip chunking)
+            // Small file chunk skip
             if (fileSize <= chunkSize)
             {
+                // Check the resume flag
                 if (resume && File.Exists(dst))
                 {
+                    // Check to see if we wrote the whole file
                     if (new FileInfo(dst).Length == fileSize)
                     {
+                        // Update
                         Interlocked.Add(ref totalWritten, fileSize);
                         RenderProgress(totalWritten, totalBytes, sw.Elapsed);
                         continue;
                     }
                 }
 
+                // If the file doesn't exist or isn't the right size
                 if (!File.Exists(dst) || new FileInfo(dst).Length != fileSize)
                 {
                     File.Copy(src, dst, true);
                 }
 
+                // Update
                 Interlocked.Add(ref totalWritten, fileSize);
                 RenderProgress(totalWritten, totalBytes, sw.Elapsed);
 
+                // Keep on keeping on
                 continue;
             }
 
@@ -281,6 +299,8 @@ class Program
             int chunkCount = (int)Math.Ceiling((double)fileSize / chunkSize);
             var completed = new ConcurrentDictionary<int, bool>();
             string stateFile = dst + ".state.json";
+
+            // Debug
             Debug.Print($"***dst: \"{dst}\" - stateFile: \"{stateFile}\"");
 
             // Check to see if we are resuming
@@ -305,14 +325,15 @@ class Program
                         }
                     }
 
+                    // Update where we are at
                     foreach (var i in saved)
                         completed[i] = true;
                 }
                 catch { /* Silent Ignore */ }
             }
 
-            // ✅ OPTIONAL IMPROVEMENT (initialize maxWrittenOffsets from state)
-            if (! completed.IsEmpty)
+            // Initialize maxWrittenOffsets from state
+            if (!completed.IsEmpty)
             {
                 long max = (long)(completed.Keys.Max() + 1) * chunkSize;
 
@@ -323,59 +344,52 @@ class Program
                 maxWrittenOffsets.TryAdd(dst, 0);
             }
 
-            //else if (File.Exists(dst))
-            //{
-            //    // ✅ assume full file if no state file
-            //    long fileSize2 = new FileInfo(src).Length;
-            //    int chunkCount2 = (int)Math.Ceiling((double)fileSize2 / chunkSize);
-
-            //    for (int i = 0; i < chunkCount2; i++)
-            //        completed[i] = true;
-            //}
-
             // Set up state
             completedMaps[dst] = completed;
             stateWriters[dst] = new StateWriter(stateFile, completed);
             fileMeta[dst] = (src, chunkCount, completed);
-            //maxWrittenOffsets.TryAdd(dst, 0);
 
             // Loop through each chunk and process in parallel
             for (int i = 0; i < chunkCount; i++)
             {
+                // Calculate offsets and size
                 long offset = (long)i * chunkSize;
                 int size = (int)Math.Min(chunkSize, fileSize - offset);
 
+                // Check to see if we have processed this already
                 bool alreadyDone = completed.ContainsKey(i);
-
                 if (alreadyDone)
                     continue;
 
+                // Save it
                 chunkQueue.Enqueue((src, dst, offset, size, i));
-
-                //if (alreadyDone) continue;
-
-                //chunkQueue.Enqueue((src, dst, offset, size, i));
             }
 
             // Set up workers
             var workers = new List<Task>();
 
+            // Loop through workers
             for (int w = 0; w < parallel; w++)
             {
+                // Add a worker
                 workers.Add(Task.Run(async () =>
                 {
+                    // Set up buffer
                     byte[] buffer = new byte[chunkSize];
 
+                    // Init
                     SafeFileHandle? srcHandle = null;
                     SafeFileHandle? dstHandle = null;
                     string? currentSrc = null;
                     string? currentDst = null;
 
+                    // While we have chunks
                     while (chunkQueue.TryDequeue(out var job))
                     {
-                        // ✅ EXPLICIT TYPE (optional but safer)
+                        // Get the job
                         (string src2, string dst2, long offset, int size, int index2) = job;
 
+                        // Check if we should move on from the source
                         if (srcHandle == null || currentSrc != src2)
                         {
                             srcHandle?.Dispose();
@@ -383,6 +397,7 @@ class Program
                             currentSrc = src2;
                         }
 
+                        // Check to see if we can move on from the destination
                         if (dstHandle == null || currentDst != dst2)
                         {
                             dstHandle?.Dispose();
@@ -395,49 +410,49 @@ class Program
                             currentDst = dst2;
                         }
 
-                        //await RandomAccess.ReadAsync(srcHandle, buffer, offset);
+                        // Read and Write
                         await RandomAccess.ReadAsync(srcHandle, buffer.AsMemory(0, size), offset);
                         await RandomAccess.WriteAsync(dstHandle, buffer.AsMemory(0, size), offset);
 
-                        //
+                        // Save state
                         completedMaps[dst2][index2] = true;
                         stateWriters[dst2].MarkDirty();
 
+                        // Update UI, etc
                         Interlocked.Add(ref totalWritten, size);
                         RenderProgress(totalWritten, totalBytes, sw.Elapsed);
                     }
 
+                    // Clean up
                     srcHandle?.Dispose();
                     dstHandle?.Dispose();
                 }));
             }
 
-            // ✅ WAIT PER FILE
+            // Wait per file
             await Task.WhenAll(workers);
         }
 
         // Check to see if we should verify the copy by comparing hashes of the source and destination files
         if (verify)
         {
+            // Debug
             Console.WriteLine("\nVerifying files...");
+
+            // Loop through all the files
             foreach (var src in files)
             {
+                // Get the paths
                 string rel = Path.GetRelativePath(sourceDir, src);
                 string dst = Path.Combine(destDir, rel);
 
+                // Compare hashes
                 if (await HashFile(src) != await HashFile(dst))
                     Console.WriteLine($"❌ {rel}");
                 else
                     Console.WriteLine($"✅ {rel}");
             }
         }
-
-        //// ✅ Ensure all file locks are released before disposal
-        //foreach (var sem in fileWriteLocks.Values)
-        //{
-        //    await sem.WaitAsync();
-        //    sem.Release();
-        //}
 
         // Cleanup
         foreach (var swr in stateWriters.Values)
@@ -446,18 +461,14 @@ class Program
             swr.Dispose();    // ✅ then shutdown
         }
 
-        //foreach (var h in srcHandles.Values)
-        //    if (h.IsValueCreated) h.Value.Dispose();
-
-        //foreach (var h in dstHandles.Values)
-        //    if (h.IsValueCreated) h.Value.Dispose();
-
-        // ✅ FIXED: Only delete state file if fully complete
+        // Only delete state file if fully complete
         foreach (var kvp in fileMeta)
         {
+            // Init
             var dst = kvp.Key;
             var (src, chunkCount, completed) = kvp.Value;
 
+            // Make sure that we are done
             if (completed.Count == chunkCount)
             {
                 TryDeleteFile(dst + ".state.json");
@@ -465,18 +476,31 @@ class Program
         }
     }
 
-    // =========================
-    // SINGLE FILE (GLOBAL STYLE)
-    // =========================
-    static async Task CopyFileGlobal(string source, string dest, int chunkSize, int parallel, bool resume, bool verify, string filter = "*")
+    /// <summary>
+    /// Copies a file from the source path to the destination path using directory-level copy operations.
+    /// </summary>
+    /// <param name="source">The path of the source file to copy.</param>
+    /// <param name="dest">The path of the destination file.</param>
+    /// <param name="chunkSize">The size of data chunks to use during the copy operation.</param>
+    /// <param name="parallel">The number of parallel operations to perform.</param>
+    /// <param name="resume">Indicates whether to resume a partial copy if it exists.</param>
+    /// <param name="verify">Indicates whether to verify the copied data.</param>
+    /// <param name="initFileFlag">Indicates whether to initialize the destination file.</param>
+    /// <param name="filter">The file filter pattern to use. Defaults to "*".</param>
+    /// <returns>A task that represents the asynchronous copy operation.</returns>
+    static async Task CopyFileGlobal(string source, string dest, int chunkSize, int parallel, 
+        bool resume, bool verify, bool initFileFlag, string filter = "*")
     {
+        // Call the directory method (I think this might not work right)
+        // TODO: Verify this works correctly
         await CopyDirectoryGlobal(
             Path.GetDirectoryName(source)!,
             Path.GetDirectoryName(dest)!,
             chunkSize,
             parallel,
             resume,
-            verify,
+            verify, 
+            initFileFlag, 
             filter);
     }
 
@@ -564,7 +588,13 @@ class Program
         }
     }
 
-    static string NormalizeTitle(string name)
+    /// <summary>
+    /// Normalizes a title string by removing file extensions, metadata tags in 
+    /// curly braces and square brackets, and extra whitespace.
+    /// </summary>
+    /// <param name="name">The title string to normalize.</param>
+    /// <returns>The normalized title string.</returns>
+    protected static string NormalizeTitle(string name)
     {
         // Remove extension if present
         name = Path.GetFileNameWithoutExtension(name);
@@ -581,10 +611,19 @@ class Program
         // Normalize whitespace
         name = WhitespaceRegex().Replace(name, " ").Trim();
 
+        // Return it
         return name;
     }
 
-    static void InitializeDestinationFile(string path, long size)
+    /// <summary>
+    /// Creates or opens a file at the specified path and preallocates it to the given size.
+    /// </summary>
+    /// <remarks>Attempts to preallocate the full size using <see cref="FileStream.SetLength"/>. If that
+    /// fails, falls back to creating a sparse file on supported platforms. Errors are silently 
+    /// ignored as this is a best-effort optimization.</remarks>
+    /// <param name="path">The file path to create or open.</param>
+    /// <param name="size">The size in bytes to preallocate for the file.</param>
+    protected static void InitializeDestinationFile(string path, long size)
     {
         try
         {
@@ -619,23 +658,40 @@ class Program
         }
     }
 
-    static async Task<bool> IsChunkWritten(SafeFileHandle srcHandle, SafeFileHandle dstHandle, long offset, int size)
+    /// <summary>
+    /// Verifies whether a chunk has been written to the destination by comparing sampled data from the source and
+    /// destination files.
+    /// </summary>
+    /// <remarks>Samples up to 4096 bytes from the chunk for comparison. Returns <see langword="false" /> if
+    /// reading from either file fails.</remarks>
+    /// <param name="srcHandle">The source file handle.</param>
+    /// <param name="dstHandle">The destination file handle.</param>
+    /// <param name="offset">The byte offset in the files where the chunk starts.</param>
+    /// <param name="size">The size of the chunk to verify.</param>
+    /// <returns><see langword="true" /> if the sampled data matches between source and destination; otherwise, <see
+    /// langword="false" />.</returns>
+    protected static async Task<bool> IsChunkWritten(SafeFileHandle srcHandle, SafeFileHandle dstHandle, long offset, int size)
     {
+        // Set up sample size
         int sampleSize = Math.Min(4096, size);
 
+        // Set up buffer
         byte[] srcBuffer = new byte[sampleSize];
         byte[] dstBuffer = new byte[sampleSize];
 
         try
         {
+            // Read both src and dst
             await RandomAccess.ReadAsync(srcHandle, srcBuffer, offset);
             await RandomAccess.ReadAsync(dstHandle, dstBuffer, offset);
         }
         catch
         {
+            // No good, so we will say this chunk isn't completed
             return false;
         }
 
+        // Return the result
         return srcBuffer.AsSpan().SequenceEqual(dstBuffer);
     }
 
