@@ -131,6 +131,10 @@ public class StateWriter : IDisposable
         cts.Dispose();
     }
 
+    /// <summary>
+    /// Flushes any pending changes to the underlying storage immediately, 
+    /// regardless of the current dirty state. This method
+    /// </summary>
     public void FlushNow()
     {
         Flush();

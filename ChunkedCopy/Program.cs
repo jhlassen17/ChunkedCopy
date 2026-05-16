@@ -83,6 +83,9 @@ class Program
                 case "--init-files":
                     initFileFlag = true;
                     break;
+                default:
+                    Console.WriteLine($"Warning: Unrecognized argument - {args[i]}");
+                    break;
             }
         }
 
