@@ -40,7 +40,7 @@ git clone https://github.com/jhlassen17/ChunkedCopy.git
 ## 👨‍💻 Author
 
 **Jeffrey Lassen**  
-Version: `1.2.1`  
+Version: `1.0.2.1`  
 Last Updated: `05/16/2026`
 
 ---
