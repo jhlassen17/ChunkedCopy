@@ -71,15 +71,19 @@ class Program
                 case "--parallel":
                     parallel = int.Parse(args[++i]);
                     break;
+                case "-nr":
                 case "--no-resume":
                     resume = false;
                     break;
+                case "-v":
                 case "--verify":
                     verify = true;
                     break;
+                case "-f":
                 case "--filter":
                     filter = args[++i];
                     break;
+                case "-i":
                 case "--init-files":
                     initFileFlag = true;
                     break;
