@@ -45,6 +45,12 @@ Last Updated: `05/16/2026`
 
 ---
 
+## 📄 License
+
+This project is licensed under the MIT License.
+
+---
+
 ## ☕ Support
 
 If you find this useful:  
