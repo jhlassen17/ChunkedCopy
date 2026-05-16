@@ -11,6 +11,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
+partial
+
 /// <summary>
 /// Provides the entry point for the Chunked File Copy application, enabling parallel and resumable file or directory
 /// copy operations with optional verification.
@@ -38,6 +40,7 @@ class Program
         bool resume = true;
         bool verify = false;
         bool isDirectory = false;
+        string? filter = null;
 
         // Set up console
         Console.Title = "Chunked Copy (Global Scheduler)";
@@ -72,6 +75,9 @@ class Program
                     break;
                 case "--verify":
                     verify = true;
+                    break;
+                case "--filter":
+                    filter = args[++i];
                     break;
             }
         }
@@ -133,11 +139,25 @@ class Program
         // Check directory flag and copy accordingly
         if (isDirectory)
         {
-            await CopyDirectoryGlobal(source, dest, chunkSize, parallel, resume, verify);
+            if (!String.IsNullOrWhiteSpace(filter))
+            {
+                await CopyDirectoryGlobal(source, dest, chunkSize, parallel, resume, verify, filter);
+            }
+            else
+            {
+                await CopyDirectoryGlobal(source, dest, chunkSize, parallel, resume, verify);
+            }
         }
         else
         {
-            await CopyFileGlobal(source, dest, chunkSize, parallel, resume);
+            if (!String.IsNullOrWhiteSpace(filter))
+            {
+                await CopyFileGlobal(source, dest, chunkSize, parallel, resume, verify, filter);
+            }
+            else
+            {
+                await CopyFileGlobal(source,dest,chunkSize,parallel, resume, verify);
+            }
 
             // Check to see if we should verify the copy by comparing hashes of the source and destination files
             if (verify)
@@ -156,20 +176,13 @@ class Program
     // =========================
     // GLOBAL DIRECTORY COPY
     // =========================
-    static async Task CopyDirectoryGlobal(string sourceDir, string destDir, int chunkSize, int parallel, bool resume, bool verify)
+    static async Task CopyDirectoryGlobal(string sourceDir, string destDir, int chunkSize, int parallel, bool resume, bool verify, string filter = "*")
     {
         string[] files;
 
-        if (true)
-        {
-            Console.WriteLine("Skipping non-3D file");
-            files = Directory.GetFiles(sourceDir, "*3D HSBS*", SearchOption.AllDirectories);
-        }
-        else
-        {
-            // Get all files in the source directory and subdirectories
-            files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories);
-        }
+        Console.WriteLine($"Skipping non-\"{filter}\" file");
+        files = Directory.GetFiles(sourceDir, filter, SearchOption.AllDirectories);
+
 
         // Calculate total bytes for progress reporting
         long totalBytes = 0;
@@ -219,16 +232,16 @@ class Program
             //  Calculate sizes, chunks, and state
             long fileSize = new FileInfo(src).Length;
             //InitializeDestinationFile(dst, fileSize);
-            if(NormalizeTitle(src) == NormalizeTitle(dst))
+            if (NormalizeTitle(src) == NormalizeTitle(dst))
             {
-                if(File.Exists(dst) && (new FileInfo(dst).Length == fileSize))
+                if (File.Exists(dst) && (new FileInfo(dst).Length == fileSize))
                 {
                     continue;
                 }
             }
 
             // 
-            if(!File.Exists(dst))
+            if (!File.Exists(dst))
             {
                 using var fs = new FileStream(dst, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite);
             }
@@ -276,14 +289,14 @@ class Program
                 try
                 {
                     // Load the JSON and copy the details into the array of completed chunks
-                    int[] saved = Array.Empty<int>();
+                    int[] saved = [];
 
                     for (int attempt = 0; attempt < 3; attempt++)
                     {
                         try
                         {
                             var json = File.ReadAllText(stateFile);
-                            saved = JsonSerializer.Deserialize<int[]>(json) ?? Array.Empty<int>();
+                            saved = JsonSerializer.Deserialize<int[]>(json) ?? [];
                             break;
                         }
                         catch
@@ -299,7 +312,7 @@ class Program
             }
 
             // ✅ OPTIONAL IMPROVEMENT (initialize maxWrittenOffsets from state)
-            if (completed.Count > 0)
+            if (! completed.IsEmpty)
             {
                 long max = (long)(completed.Keys.Max() + 1) * chunkSize;
 
@@ -455,7 +468,7 @@ class Program
     // =========================
     // SINGLE FILE (GLOBAL STYLE)
     // =========================
-    static async Task CopyFileGlobal(string source, string dest, int chunkSize, int parallel, bool resume)
+    static async Task CopyFileGlobal(string source, string dest, int chunkSize, int parallel, bool resume, bool verify, string filter = "*")
     {
         await CopyDirectoryGlobal(
             Path.GetDirectoryName(source)!,
@@ -463,7 +476,8 @@ class Program
             chunkSize,
             parallel,
             resume,
-            false);
+            verify,
+            filter);
     }
 
     /// <summary>
@@ -502,7 +516,7 @@ class Program
     /// decimal places as needed.</returns>
     static string Fmt(long b)
     {
-        string[] s = { "B", "KB", "MB", "GB", "TB" };
+        string[] s = ["B", "KB", "MB", "GB", "TB"];
         double v = b;
         int i = 0;
         while (v >= 1024 && i < s.Length - 1) { v /= 1024; i++; }
@@ -523,7 +537,7 @@ class Program
         using var sha = SHA256.Create();
         using var stream = File.OpenRead(path);
         var hash = await sha.ComputeHashAsync(stream);
-        return BitConverter.ToString(hash).Replace("-", "").ToLower();
+        return Convert.ToHexStringLower(hash);
     }
 
     /// <summary>
@@ -556,16 +570,16 @@ class Program
         name = Path.GetFileNameWithoutExtension(name);
 
         // Remove {tmdb-xxx} or similar
-        name = Regex.Replace(name, @"\{.*?\}", "");
+        name = CurlyBracesRegex().Replace(name, "");
 
         // Remove [1080p], [HDR], etc.
-        name = Regex.Replace(name, @"\[.*?\]", "");
+        name = SquareBracketsRegex().Replace(name, "");
 
         // Remove trailing junk like " - something"
         // name = Regex.Replace(name, @"\s-\s.*$", "");
 
         // Normalize whitespace
-        name = Regex.Replace(name, @"\s+", " ").Trim();
+        name = WhitespaceRegex().Replace(name, " ").Trim();
 
         return name;
     }
@@ -624,4 +638,25 @@ class Program
 
         return srcBuffer.AsSpan().SequenceEqual(dstBuffer);
     }
+
+    /// <summary>
+    /// Gets a compiled regular expression that matches text enclosed in curly braces.
+    /// </summary>
+    /// <returns>A Regex instance that matches content within curly braces using non-greedy matching.</returns>
+    [GeneratedRegex(@"\{.*?\}")]
+    private static partial Regex CurlyBracesRegex();
+
+    /// <summary>
+    /// Gets a compiled regular expression that matches text enclosed in square brackets, including the brackets.
+    /// </summary>
+    /// <returns>A <see cref="Regex"/> that matches patterns of the form [text].</returns>
+    [GeneratedRegex(@"\[.*?\]")]
+    private static partial Regex SquareBracketsRegex();
+
+    /// <summary>
+    /// Gets a compiled regular expression that matches one or more whitespace characters.
+    /// </summary>
+    /// <returns>A regular expression that matches one or more whitespace characters.</returns>
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex WhitespaceRegex();
 }
