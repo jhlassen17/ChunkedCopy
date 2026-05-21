@@ -86,8 +86,6 @@ while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
 
 ## 📊 Why Chunked Copy?
 
-## 📊 Why Chunked Copy?
-
 | Method             | Memory Usage | Reliability | Large File Support |
 |------------------|-------------|------------|--------------------|
 | File.ReadAllBytes | High        | ❌         | ❌                 |
